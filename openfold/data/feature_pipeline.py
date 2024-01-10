@@ -41,12 +41,9 @@ def np_to_tensor_dict(
         A dictionary of features mapping feature names to features. Only the given
         features are returned, all other ones are filtered out.
     """
-    # torch generates warnings if feature is already a torch Tensor
-    to_tensor = lambda t: torch.tensor(t) if type(t) != torch.Tensor else t.clone().detach()
     tensor_dict = {
-        k: to_tensor(v) for k, v in np_example.items() if k in features
+        k: torch.tensor(v) for k, v in np_example.items() if k in features
     }
-
     return tensor_dict
 
 
@@ -62,10 +59,6 @@ def make_data_config(
             mode_cfg.crop_size = num_res
 
     feature_names = cfg.common.unsupervised_features
-
-    # Add seqemb related features if using seqemb mode.
-    if cfg.seqemb_mode.enabled:
-        feature_names += cfg.common.seqemb_features
 
     if cfg.common.use_templates:
         feature_names += cfg.common.template_features
@@ -98,21 +91,6 @@ def np_example_to_features(
             tensor_dict,
             cfg.common,
             cfg[mode],
-        )
-
-    if mode == "train":
-        p = torch.rand(1).item()
-        use_clamped_fape_value = float(p < cfg.supervised.clamp_prob)
-        features["use_clamped_fape"] = torch.full(
-            size=[cfg.common.max_recycling_iters + 1],
-            fill_value=use_clamped_fape_value,
-            dtype=torch.float32,
-        )
-    else:
-        features["use_clamped_fape"] = torch.full(
-            size=[cfg.common.max_recycling_iters + 1],
-            fill_value=0.0,
-            dtype=torch.float32,
         )
 
     return {k: v for k, v in features.items()}

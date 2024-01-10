@@ -18,7 +18,6 @@
 import collections
 import functools
 from typing import Mapping, List, Tuple
-from importlib import resources
 
 import numpy as np
 import tree
@@ -410,9 +409,7 @@ residue_atoms = {
 # (The LDDT paper lists 7 amino acids as ambiguous, but the naming ambiguities
 # in LEU, VAL and ARG can be resolved by using the 3d constellations of
 # the 'ambiguous' atoms and their neighbours)
-# Because for LEU, VAL and ARG, no ambiguous exist when the prediction output is chi angle instead of the location of individual atoms.
-# For the rest, ASP and others, when you rotate the bond 180 degree, you get the same configuraiton due to symmetry.
-
+# TODO: ^ interpret this
 residue_atom_renaming_swaps = {
     "ASP": {"OD1": "OD2"},
     "GLU": {"OE1": "OE2"},
@@ -455,8 +452,9 @@ def load_stereo_chemical_props() -> Tuple[
       residue_bond_angles: dict that maps resname --> list of BondAngle tuples
     """
     # TODO: this file should be downloaded in a setup script
-    stereo_chemical_props = resources.read_text("openfold.resources", "stereo_chemical_props.txt")
-
+    stereo_chemical_props_path = "openfold/resources/stereo_chemical_props.txt"
+    with open(stereo_chemical_props_path, "rt") as f:
+        stereo_chemical_props = f.read()
     lines_iter = iter(stereo_chemical_props.splitlines())
     # Load bond lengths.
     residue_bonds = {}
@@ -1123,10 +1121,10 @@ def _make_rigid_transformation_4x4(ex, ey, translation):
 # and an array with (restype, atomtype, coord) for the atom positions
 # and compute affine transformation matrices (4,4) from one rigid group to the
 # previous group
-restype_atom37_to_rigid_group = np.zeros([21, 37], dtype=int)
+restype_atom37_to_rigid_group = np.zeros([21, 37], dtype=np.int)
 restype_atom37_mask = np.zeros([21, 37], dtype=np.float32)
 restype_atom37_rigid_group_positions = np.zeros([21, 37, 3], dtype=np.float32)
-restype_atom14_to_rigid_group = np.zeros([21, 14], dtype=int)
+restype_atom14_to_rigid_group = np.zeros([21, 14], dtype=np.int)
 restype_atom14_mask = np.zeros([21, 14], dtype=np.float32)
 restype_atom14_rigid_group_positions = np.zeros([21, 14, 3], dtype=np.float32)
 restype_rigid_group_default_frame = np.zeros([21, 8, 4, 4], dtype=np.float32)
@@ -1282,7 +1280,7 @@ def make_atom14_dists_bounds(
 
 restype_atom14_ambiguous_atoms = np.zeros((21, 14), dtype=np.float32)
 restype_atom14_ambiguous_atoms_swap_idx = np.tile(
-    np.arange(14, dtype=int), (21, 1)
+    np.arange(14, dtype=np.int), (21, 1)
 )
 
 
@@ -1303,10 +1301,3 @@ def _make_atom14_ambiguity_feats():
 
 
 _make_atom14_ambiguity_feats()
-
-
-def aatype_to_str_sequence(aatype):
-    return ''.join([
-        restypes_with_x[aatype[i]] 
-        for i in range(len(aatype))
-    ])

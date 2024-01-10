@@ -50,7 +50,7 @@ def cast_to_64bit_ints(protein):
 
 
 def make_one_hot(x, num_classes):
-    x_one_hot = torch.zeros(*x.shape, num_classes, device=x.device)
+    x_one_hot = torch.zeros(*x.shape, num_classes)
     x_one_hot.scatter_(-1, x.unsqueeze(-1), 1)
     return x_one_hot
 
@@ -92,9 +92,9 @@ def fix_templates_aatype(protein):
         )
         # Map hhsearch-aatype to our aatype.
         new_order_list = rc.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE
-        new_order = torch.tensor(
-            new_order_list, dtype=torch.int64, device=protein["aatype"].device,
-        ).expand(num_templates, -1)
+        new_order = torch.tensor(new_order_list, dtype=torch.int64).expand(
+            num_templates, -1
+        )
         protein["template_aatype"] = torch.gather(
             new_order, 1, index=protein["template_aatype"]
         )
@@ -106,8 +106,7 @@ def correct_msa_restypes(protein):
     """Correct MSA restype to have the same order as rc."""
     new_order_list = rc.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE
     new_order = torch.tensor(
-        [new_order_list] * protein["msa"].shape[1], 
-        device=protein["msa"].device,
+        [new_order_list] * protein["msa"].shape[1], dtype=protein["msa"].dtype
     ).transpose(0, 1)
     protein["msa"] = torch.gather(new_order, 0, protein["msa"])
 
@@ -182,19 +181,13 @@ def randomly_replace_msa_with_unknown(protein, replace_proportion):
 
 @curry1
 def sample_msa(protein, max_seq, keep_extra, seed=None):
-    """Sample MSA randomly, remaining sequences are stored are stored as `extra_*`."""
+    """Sample MSA randomly, remaining sequences are stored are stored as `extra_*`.""" 
     num_seq = protein["msa"].shape[0]
-
-    g = None
+    g = torch.Generator(device=protein["msa"].device)
     if seed is not None:
-        g = torch.Generator(device=protein["msa"].device)
         g.manual_seed(seed)
-
     shuffled = torch.randperm(num_seq - 1, generator=g) + 1
-    index_order = torch.cat(
-        (torch.tensor([0], device=shuffled.device), shuffled), 
-        dim=0
-    )
+    index_order = torch.cat((torch.tensor([0]), shuffled), dim=0)
     num_sel = min(max_seq, num_seq)
     sel_seq, not_sel_seq = torch.split(
         index_order, [num_sel, num_seq - num_sel]
@@ -243,43 +236,43 @@ def delete_extra_msa(protein):
             del protein["extra_" + k]
     return protein
 
+def xl(protein):
+    protein["xl"] = protein["xl"].clone().detach().to(torch.float32)
+    protein["xl_grouping"] = protein["xl_grouping"].clone().detach().to(torch.float32)
+
+    return protein
 
 # Not used in inference
 @curry1
 def block_delete_msa(protein, config):
     num_seq = protein["msa"].shape[0]
     block_num_seq = torch.floor(
-        torch.tensor(num_seq, dtype=torch.float32, device=protein["msa"].device)
+        torch.tensor(num_seq, dtype=torch.float32)
         * config.msa_fraction_per_block
     ).to(torch.int32)
 
-    if int(block_num_seq) == 0:
-        return protein
-
     if config.randomize_num_blocks:
-        nb = int(torch.randint(
-            low=0,
-            high=config.num_blocks + 1,
-            size=(1,),
-            device=protein["msa"].device,
-        )[0])
+        nb = torch.distributions.uniform.Uniform(
+            0, config.num_blocks + 1
+        ).sample()
     else:
         nb = config.num_blocks
 
-    del_block_starts = torch.randint(low=1, high=num_seq, size=(nb,), device=protein["msa"].device)
-    del_blocks = del_block_starts[:, None] + torch.arange(start=0, end=block_num_seq)
-    del_blocks = torch.clip(del_blocks, 1, num_seq - 1)
-    del_indices = torch.unique(torch.reshape(del_blocks, [-1]))
+    del_block_starts = torch.distributions.Uniform(0, num_seq).sample(nb)
+    del_blocks = del_block_starts[:, None] + torch.range(block_num_seq)
+    del_blocks = torch.clip(del_blocks, 0, num_seq - 1)
+    del_indices = torch.unique(torch.sort(torch.reshape(del_blocks, [-1])))[0]
 
     # Make sure we keep the original sequence
-    combined = torch.cat((torch.arange(start=0, end=num_seq), del_indices)).long()
+    combined = torch.cat((torch.range(1, num_seq)[None], del_indices[None]))
     uniques, counts = combined.unique(return_counts=True)
-    keep_indices = uniques[counts == 1]
+    difference = uniques[counts == 1]
+    intersection = uniques[counts > 1]
+    keep_indices = torch.squeeze(difference, 0)
 
-    assert int(keep_indices[0]) == 0
     for k in MSA_FEATURE_NAMES:
         if k in protein:
-            protein[k] = torch.index_select(protein[k], 0, keep_indices)
+            protein[k] = torch.gather(protein[k], keep_indices)
 
     return protein
 
@@ -287,11 +280,7 @@ def block_delete_msa(protein, config):
 @curry1
 def nearest_neighbor_clusters(protein, gap_agreement_weight=0.0):
     weights = torch.cat(
-        [
-            torch.ones(21, device=protein["msa"].device), 
-            gap_agreement_weight * torch.ones(1, device=protein["msa"].device),
-            torch.zeros(1, device=protein["msa"].device)
-        ],
+        [torch.ones(21), gap_agreement_weight * torch.ones(1), torch.zeros(1)],
         0,
     )
 
@@ -340,10 +329,7 @@ def unsorted_segment_sum(data, segment_ids, num_segments):
     )
     segment_ids = segment_ids.expand(data.shape)
     shape = [num_segments] + list(data.shape[1:])
-    tensor = (
-        torch.zeros(*shape, device=segment_ids.device)
-        .scatter_add_(0, segment_ids, data.float())
-    )
+    tensor = torch.zeros(*shape).scatter_add_(0, segment_ids, data.float())
     tensor = tensor.type(data.dtype)
     return tensor
 
@@ -420,7 +406,7 @@ def make_pseudo_beta(protein, prefix=""):
 
 @curry1
 def add_constant_field(protein, key, value):
-    protein[key] = torch.tensor(value, device=protein["msa"].device)
+    protein[key] = torch.tensor(value)
     return protein
 
 
@@ -450,11 +436,7 @@ def make_hhblits_profile(protein):
 def make_masked_msa(protein, config, replace_fraction):
     """Create data for BERT on raw MSA."""
     # Add a random amino acid uniformly.
-    random_aa = torch.tensor(
-        [0.05] * 20 + [0.0, 0.0], 
-        dtype=torch.float32, 
-        device=protein["aatype"].device
-    )
+    random_aa = torch.tensor([0.05] * 20 + [0.0, 0.0], dtype=torch.float32)
 
     categorical_probs = (
         config.uniform_prob * random_aa
@@ -471,7 +453,6 @@ def make_masked_msa(protein, config, replace_fraction):
         1.0 - config.profile_prob - config.same_prob - config.uniform_prob
     )
     assert mask_prob >= 0.0
-
     categorical_probs = torch.nn.functional.pad(
         categorical_probs, pad_shapes, value=mask_prob
     )
@@ -668,11 +649,7 @@ def make_atom14_masks(protein):
 
 
 def make_atom14_masks_np(batch):
-    batch = tree_map(
-        lambda n: torch.tensor(n, device="cpu"), 
-        batch, 
-        np.ndarray
-    )
+    batch = tree_map(lambda n: torch.tensor(n), batch, np.ndarray)
     out = make_atom14_masks(batch)
     out = tensor_tree_map(lambda t: np.array(t), out)
     return out
@@ -736,7 +713,6 @@ def make_atom14_positions(protein):
             for index, correspondence in enumerate(correspondences):
                 renaming_matrix[index, correspondence] = 1.0
         all_matrices[resname] = renaming_matrix
-    
     renaming_matrices = torch.stack(
         [all_matrices[restype] for restype in restype_3]
     )
@@ -1147,10 +1123,8 @@ def random_crop_to_size(
 ):
     """Crop randomly to `crop_size`, or keep as is if shorter than that."""
     # We want each ensemble to be cropped the same way
-
-    g = None
+    g = torch.Generator(device=protein["seq_length"].device)
     if seed is not None:
-        g = torch.Generator(device=protein["seq_length"].device)
         g.manual_seed(seed)
 
     seq_length = protein["seq_length"]

@@ -16,13 +16,12 @@
 import torch
 import torch.nn as nn
 
-from openfold.model.primitives import Linear, LayerNorm
+from openfold.model.primitives import Linear
 from openfold.utils.loss import (
     compute_plddt,
     compute_tm,
     compute_predicted_aligned_error,
 )
-from openfold.utils.precision_utils import is_fp16_enabled
 
 
 class AuxiliaryHeads(nn.Module):
@@ -97,7 +96,7 @@ class PerResidueLDDTCaPredictor(nn.Module):
         self.c_in = c_in
         self.c_hidden = c_hidden
 
-        self.layer_norm = LayerNorm(self.c_in)
+        self.layer_norm = nn.LayerNorm(self.c_in)
 
         self.linear_1 = Linear(self.c_in, self.c_hidden, init="relu")
         self.linear_2 = Linear(self.c_hidden, self.c_hidden, init="relu")
@@ -138,7 +137,7 @@ class DistogramHead(nn.Module):
 
         self.linear = Linear(self.c_z, self.no_bins, init="final")
 
-    def _forward(self, z):  # [*, N, N, C_z]
+    def forward(self, z):  # [*, N, N, C_z]
         """
         Args:
             z:
@@ -150,13 +149,6 @@ class DistogramHead(nn.Module):
         logits = self.linear(z)
         logits = logits + logits.transpose(-2, -3)
         return logits
-    
-    def forward(self, z): 
-        if(is_fp16_enabled()):
-            with torch.cuda.amp.autocast(enabled=False):
-                return self._forward(z.float())
-        else:
-            return self._forward(z)
 
 
 class TMScoreHead(nn.Module):

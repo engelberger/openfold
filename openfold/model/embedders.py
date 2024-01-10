@@ -15,10 +15,10 @@
 
 import torch
 import torch.nn as nn
-from typing import Tuple, Optional
+from typing import Tuple
 
-from openfold.model.primitives import Linear, LayerNorm
-from openfold.utils.tensor_utils import add, one_hot
+from openfold.model.primitives import Linear
+from openfold.utils.tensor_utils import one_hot
 
 
 class InputEmbedder(nn.Module):
@@ -81,21 +81,15 @@ class InputEmbedder(nn.Module):
         d = ri[..., None] - ri[..., None, :]
         boundaries = torch.arange(
             start=-self.relpos_k, end=self.relpos_k + 1, device=d.device
-        ) 
-        reshaped_bins = boundaries.view(((1,) * len(d.shape)) + (len(boundaries),))
-        d = d[..., None] - reshaped_bins
-        d = torch.abs(d)
-        d = torch.argmin(d, dim=-1)
-        d = nn.functional.one_hot(d, num_classes=len(boundaries)).float()
-        d = d.to(ri.dtype)
-        return self.linear_relpos(d)
+        )
+        oh = one_hot(d, boundaries).type(ri.dtype)
+        return self.linear_relpos(oh)
 
     def forward(
         self,
         tf: torch.Tensor,
         ri: torch.Tensor,
         msa: torch.Tensor,
-        inplace_safe: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -117,15 +111,8 @@ class InputEmbedder(nn.Module):
         tf_emb_j = self.linear_tf_z_j(tf)
 
         # [*, N_res, N_res, c_z]
-        pair_emb = self.relpos(ri.type(tf_emb_i.dtype))
-        pair_emb = add(pair_emb, 
-            tf_emb_i[..., None, :], 
-            inplace=inplace_safe
-        )
-        pair_emb = add(pair_emb, 
-            tf_emb_j[..., None, :, :], 
-            inplace=inplace_safe
-        )
+        pair_emb = tf_emb_i[..., None, :] + tf_emb_j[..., None, :, :]
+        pair_emb = pair_emb + self.relpos(ri.type(pair_emb.dtype))
 
         # [*, N_clust, N_res, c_m]
         n_clust = msa.shape[-3]
@@ -138,100 +125,77 @@ class InputEmbedder(nn.Module):
 
         return msa_emb, pair_emb
 
-
-class PreembeddingEmbedder(nn.Module):
+class XLEmbedder(nn.Module):
     """
-    Embeds the sequence pre-embedding passed to the model and the target_feat features.
+    Embeds the crosslinking input (soft contacts with FDR)
+
     """
 
     def __init__(
         self,
-        tf_dim: int,
-        preembedding_dim: int,
-        c_z: int,
         c_m: int,
-        relpos_k: int,
+        c_z: int,
+        distograms: bool,
         **kwargs,
     ):
         """
         Args:
-            tf_dim:
-                End channel dimension of the incoming target features
-            preembedding_dim:
-                End channel dimension of the incoming embeddings
-            c_z:
-                Pair embedding dimension
             c_m:
-                Single-Seq embedding dimension
-            relpos_k:
-                Window size used in relative position encoding
+                MSA channel dimension
+            c_z:
+                Pair embedding channel dimension
         """
-        super(PreembeddingEmbedder, self).__init__()
+        super(XLEmbedder, self).__init__()
 
-        self.tf_dim = tf_dim
-        self.preembedding_dim = preembedding_dim
-
-        self.c_z = c_z
         self.c_m = c_m
+        self.c_z = c_z
 
-        self.linear_tf_m = Linear(tf_dim, c_m)
-        self.linear_preemb_m = Linear(self.preembedding_dim, c_m)
-        self.linear_preemb_z_i = Linear(self.preembedding_dim, c_z)
-        self.linear_preemb_z_j = Linear(self.preembedding_dim, c_z)
-
-        # Relative Positional Encoding
-        self.relpos_k = relpos_k
-        self.no_bins = 2 * relpos_k + 1
-        self.linear_relpos = Linear(self.no_bins, c_z)
-
-    def relpos(self, ri: torch.Tensor):
-        """
-        Computes relative positional encodings
-        Args:
-            ri:
-                "residue_index" feature of shape [*, N]
-        Returns:
-                Relative positional encoding of protein using the
-                residue_index feature
-        """
-        d = ri[..., None] - ri[..., None, :]
-        boundaries = torch.arange(
-            start=-self.relpos_k, end=self.relpos_k + 1, device=d.device
-        )
-        reshaped_bins = boundaries.view(((1,) * len(d.shape)) + (len(boundaries),))
-        d = d[..., None] - reshaped_bins
-        d = torch.abs(d)
-        d = torch.argmin(d, dim=-1)
-        d = nn.functional.one_hot(d, num_classes=len(boundaries)).float()
-        d = d.to(ri.dtype)
-        return self.linear_relpos(d)
+        if distograms:
+            self.linear = Linear(128, self.c_z)
+        else:
+            self.linear = Linear(1, self.c_z)
+            
 
     def forward(
         self,
-        tf: torch.Tensor,
-        ri: torch.Tensor,
-        preemb: torch.Tensor,
-        inplace_safe: bool = False,
+        x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        tf_m = (
-            self.linear_tf_m(tf)
-            .unsqueeze(-3)
-        )
-        preemb_emb = self.linear_preemb_m(preemb[..., None, :, :]) + tf_m
-        preemb_emb_i = self.linear_preemb_z_i(preemb)
-        preemb_emb_j = self.linear_preemb_z_j(preemb)
+        return self.linear(x)
 
-        pair_emb = self.relpos(ri.type(preemb_emb_i.dtype))
-        pair_emb = add(pair_emb,
-                       preemb_emb_i[..., None, :],
-                       inplace=inplace_safe)
-        pair_emb = add(pair_emb,
-                       preemb_emb_j[..., None, :, :],
-                       inplace=inplace_safe)
 
-        return preemb_emb, pair_emb
+class XLGroupingEmbedder(nn.Module):
+    """
+    Embeds the crosslinking groups
 
+    """
+
+    def __init__(
+        self,
+        c_m: int,
+        c_z: int,
+        **kwargs,
+    ):
+        """
+        Args:
+            c_m:
+                MSA channel dimension
+            c_z:
+                Pair embedding channel dimension
+        """
+        super(XLGroupingEmbedder, self).__init__()
+
+        self.c_m = c_m
+        self.c_z = c_z
+
+        self.linear = Linear(self.c_m, self.c_z)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        return self.linear(x)
 
 class RecyclingEmbedder(nn.Module):
     """
@@ -239,6 +203,7 @@ class RecyclingEmbedder(nn.Module):
 
     Implements Algorithm 32.
     """
+
     def __init__(
         self,
         c_m: int,
@@ -271,16 +236,17 @@ class RecyclingEmbedder(nn.Module):
         self.no_bins = no_bins
         self.inf = inf
 
+        self.bins = None
+
         self.linear = Linear(self.no_bins, self.c_z)
-        self.layer_norm_m = LayerNorm(self.c_m)
-        self.layer_norm_z = LayerNorm(self.c_z)
+        self.layer_norm_m = nn.LayerNorm(self.c_m)
+        self.layer_norm_z = nn.LayerNorm(self.c_z)
 
     def forward(
         self,
         m: torch.Tensor,
         z: torch.Tensor,
         x: torch.Tensor,
-        inplace_safe: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -296,28 +262,23 @@ class RecyclingEmbedder(nn.Module):
             z:
                 [*, N_res, N_res, C_z] pair embedding update
         """
+        if self.bins is None:
+            self.bins = torch.linspace(
+                self.min_bin,
+                self.max_bin,
+                self.no_bins,
+                dtype=x.dtype,
+                device=x.device,
+                requires_grad=False,
+            )
+
         # [*, N, C_m]
         m_update = self.layer_norm_m(m)
-        if(inplace_safe):
-            m.copy_(m_update)
-            m_update = m
-
-        # [*, N, N, C_z]
-        z_update = self.layer_norm_z(z)
-        if(inplace_safe):
-            z.copy_(z_update)
-            z_update = z
 
         # This squared method might become problematic in FP16 mode.
-        bins = torch.linspace(
-            self.min_bin,
-            self.max_bin,
-            self.no_bins,
-            dtype=x.dtype,
-            device=x.device,
-            requires_grad=False,
-        )
-        squared_bins = bins ** 2
+        # I'm using it because my homegrown method had a stubborn discrepancy I
+        # couldn't find in time.
+        squared_bins = self.bins ** 2
         upper = torch.cat(
             [squared_bins[1:], squared_bins.new_tensor([self.inf])], dim=-1
         )
@@ -330,7 +291,7 @@ class RecyclingEmbedder(nn.Module):
 
         # [*, N, N, C_z]
         d = self.linear(d)
-        z_update = add(z_update, d, inplace_safe)
+        z_update = d + self.layer_norm_z(z)
 
         return m_update, z_update
 
@@ -428,6 +389,7 @@ class ExtraMSAEmbedder(nn.Module):
 
     Implements Algorithm 2, line 15
     """
+
     def __init__(
         self,
         c_in: int,

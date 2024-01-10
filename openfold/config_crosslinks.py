@@ -225,7 +225,7 @@ config = mlc.ConfigDict(
                 "max_templates": 4,
                 "shuffle_top_k_prefiltered": 20,
                 "crop": True,
-                "crop_size": 256,
+                "crop_size": 384,
                 "supervised": True,
                 "clamp_prob": 0.9,
                 "subsample_recycling": True,
@@ -263,6 +263,7 @@ config = mlc.ConfigDict(
             "xl_embedder": {
                 "c_z": c_z,
                 "c_m": 1,
+                "distograms": False,
             },
             "recycling_embedder": {
                 "c_z": c_z,
@@ -419,7 +420,7 @@ config = mlc.ConfigDict(
                 "eps": eps,  # 1e-8,
                 "min_resolution": 0.1,
                 "max_resolution": 3.0,
-                "weight": 0.0,
+                "weight": 0.01,
             },
             "fape": {
                 "backbone": {
@@ -457,7 +458,7 @@ config = mlc.ConfigDict(
                 "violation_tolerance_factor": 12.0,
                 "clash_overlap_tolerance": 1.5,
                 "eps": eps,  # 1e-6,
-                "weight": 0.0,
+                "weight": 1.0,
             },
             "tm": {
                 "max_bin": 31,

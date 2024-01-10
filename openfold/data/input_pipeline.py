@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import random
+from functools import partial
 
 import torch
 
@@ -30,6 +30,7 @@ def nonensembled_transform_fns(common_cfg, mode_cfg):
         data_transforms.make_seq_mask,
         data_transforms.make_msa_mask,
         data_transforms.make_hhblits_profile,
+        data_transforms.xl,
     ]
     if common_cfg.use_templates:
         transforms.extend(
@@ -71,9 +72,6 @@ def ensembled_transform_fns(common_cfg, mode_cfg, ensemble_seed):
     """Input pipeline data transformers that can be ensembled and averaged."""
     transforms = []
 
-    if mode_cfg.block_delete_msa:
-        transforms.append(data_transforms.block_delete_msa(common_cfg.block_delete_msa))
-
     if "max_distillation_msa_clusters" in mode_cfg:
         transforms.append(
             data_transforms.sample_msa_distillation(
@@ -87,7 +85,7 @@ def ensembled_transform_fns(common_cfg, mode_cfg, ensemble_seed):
         pad_msa_clusters = mode_cfg.max_msa_clusters
 
     max_msa_clusters = pad_msa_clusters
-    max_extra_msa = mode_cfg.max_extra_msa
+    max_extra_msa = common_cfg.max_extra_msa
 
     msa_seed = None
     if(not common_cfg.resample_msa_in_recycling):
@@ -140,7 +138,7 @@ def ensembled_transform_fns(common_cfg, mode_cfg, ensemble_seed):
             data_transforms.make_fixed_size(
                 crop_feats,
                 pad_msa_clusters,
-                mode_cfg.max_extra_msa,
+                common_cfg.max_extra_msa,
                 mode_cfg.crop_size,
                 mode_cfg.max_templates,
             )
@@ -156,7 +154,7 @@ def ensembled_transform_fns(common_cfg, mode_cfg, ensemble_seed):
 def process_tensors_from_config(tensors, common_cfg, mode_cfg):
     """Based on the config, apply filters and transformations to the data."""
 
-    ensemble_seed = random.randint(0, torch.iinfo(torch.int32).max)
+    ensemble_seed = torch.Generator().seed()
 
     def wrap_ensemble_fn(data, i):
         """Function to be mapped over the ensemble dimension."""
